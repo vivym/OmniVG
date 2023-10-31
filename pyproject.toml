@@ -1,0 +1,19 @@
+[tool.poetry]
+name = "omni-vg"
+version = "0.1.0"
+description = ""
+authors = ["Ming Yang <ymviv@qq.com>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.11"
+xformers = "^0.0.22.post7"
+transformers = "^4.34.1"
+accelerate = "^0.24.1"
+diffusers = {git = "https://github.com/huggingface/diffusers"}
+safetensors = "^0.4.0"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
