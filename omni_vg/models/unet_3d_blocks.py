@@ -387,7 +387,7 @@ class TransformerTemporalModel(nn.Module):
 
         self.in_channels = in_channels
 
-        self.norm = torch.nn.GroupNorm(num_groups=norm_num_groups, num_channels=in_channels, eps=1e-6, affine=True)
+        self.norm = GroupNorm(num_groups=norm_num_groups, num_channels=in_channels, eps=1e-6, affine=True)
         self.proj_in = nn.Linear(in_channels, inner_dim)
 
         # 3. Define transformers blocks
@@ -453,10 +453,9 @@ class TransformerTemporalModel(nn.Module):
 
         residual = hidden_states
 
-        hidden_states = hidden_states.permute(0, 2, 1, 3, 4)
-
         hidden_states = self.norm(hidden_states)
-        hidden_states = hidden_states.permute(0, 3, 4, 2, 1).reshape(batch_size * height * width, num_frames, channel)
+
+        hidden_states = hidden_states.permute(0, 3, 4, 1, 2).reshape(batch_size * height * width, num_frames, channel)
 
         hidden_states = self.proj_in(hidden_states)
 
@@ -704,8 +703,8 @@ class UNetMidBlock3DCrossAttn(nn.Module):
 
             temp_attentions.append(
                 TransformerTemporalModel(
-                    in_channels // num_temp_attention_heads,
                     num_temp_attention_heads,
+                    in_channels // num_temp_attention_heads,
                     in_channels=in_channels,
                     num_layers=1,
                     cross_attention_dim=temp_cross_attention_dim,
@@ -911,8 +910,8 @@ class CrossAttnDownBlock3D(nn.Module):
 
             temp_attentions.append(
                 TransformerTemporalModel(
-                    out_channels // num_temp_attention_heads,
                     num_temp_attention_heads,
+                    out_channels // num_temp_attention_heads,
                     in_channels=out_channels,
                     num_layers=1,
                     cross_attention_dim=temp_cross_attention_dim,
@@ -993,7 +992,6 @@ class CrossAttnDownBlock3D(nn.Module):
                     hidden_states, cross_attention_kwargs=cross_attention_kwargs, return_dict=False
                 )[0]
             else:
-                from diffusers.models.unet_2d_blocks import CrossAttnDownBlock2D
                 hidden_states = resnet(hidden_states, temb, scale=lora_scale)
                 hidden_states = temp_conv(hidden_states)
                 hidden_states = attn(
@@ -1077,8 +1075,8 @@ class DownBlock3D(nn.Module):
             )
             temp_attentions.append(
                 TransformerTemporalModel(
-                    out_channels // num_temp_attention_heads,
                     num_temp_attention_heads,
+                    out_channels // num_temp_attention_heads,
                     in_channels=out_channels,
                     num_layers=1,
                     cross_attention_dim=temp_cross_attention_dim,
@@ -1252,8 +1250,8 @@ class CrossAttnUpBlock3D(nn.Module):
 
             temp_attentions.append(
                 TransformerTemporalModel(
-                    out_channels // num_temp_attention_heads,
                     num_temp_attention_heads,
+                    out_channels // num_temp_attention_heads,
                     in_channels=out_channels,
                     num_layers=1,
                     cross_attention_dim=temp_cross_attention_dim,
@@ -1430,8 +1428,8 @@ class UpBlock3D(nn.Module):
             )
             temp_attentions.append(
                 TransformerTemporalModel(
-                    out_channels // num_temp_attention_heads,
                     num_temp_attention_heads,
+                    out_channels // num_temp_attention_heads,
                     in_channels=out_channels,
                     num_layers=1,
                     cross_attention_dim=temp_cross_attention_dim,
