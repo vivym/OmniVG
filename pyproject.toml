@@ -12,6 +12,8 @@ transformers = "^4.34.1"
 accelerate = "^0.24.1"
 diffusers = {git = "https://github.com/huggingface/diffusers"}
 safetensors = "^0.4.0"
+av = "^10.0.0"
+imageio = "^2.31.6"
 
 
 [build-system]

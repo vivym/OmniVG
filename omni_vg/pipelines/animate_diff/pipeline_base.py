@@ -9,7 +9,6 @@ import torch
 from accelerate import init_empty_weights
 from diffusers.pipelines.pipeline_utils import (
     DiffusionPipeline,
-    ALL_IMPORTABLE_CLASSES,
     is_safetensors_compatible,
     variant_compatible_siblings,
 )
@@ -140,6 +139,15 @@ class AnimateDiffBasePipeline(DiffusionPipeline):
                 module = getattr(base_pipeline, module_name)
             init_dict[module_name] = module
 
+        if "scheduler" in pipeline_config_dict:
+            library_name, class_name = pipeline_config_dict["scheduler"]
+            scheduler_config_path = os.path.join(cached_folder, "scheduler", "scheduler_config.json")
+            scheduler_config = cls._dict_from_json_file(scheduler_config_path)
+            assert scheduler_config["_class_name"] == class_name
+
+            scheduler_cls = cls.get_pipeline_or_model_cls(class_name, library_name=library_name)
+            init_dict["scheduler"] = scheduler_cls(**scheduler_config)
+
         # 6. Throw nice warnings / errors for fast accelerate loading
         if low_cpu_mem_usage and not is_accelerate_available():
             low_cpu_mem_usage = False
@@ -169,7 +177,7 @@ class AnimateDiffBasePipeline(DiffusionPipeline):
             )
 
         # 7. Load motion module and configs
-        config_dict = cls._dict_from_json_file(os.path.join(cached_folder, "config.json"))
+        config_dict = cls._dict_from_json_file(os.path.join(cached_folder, "mm", "config.json"))
 
         base_unet = kwargs["unet"] if "unet" in kwargs else base_pipeline.unet
         unet_init_dict = {
@@ -201,7 +209,7 @@ class AnimateDiffBasePipeline(DiffusionPipeline):
         state_dict = base_unet.state_dict()
 
         # TODO: support variants
-        with safe_open(os.path.join(cached_folder, "mm.safetensors"), framework="pt", device="cpu") as f:
+        with safe_open(os.path.join(cached_folder, "mm", "diffusion_pytorch_model.safetensors"), framework="pt", device="cpu") as f:
             for key in logging.tqdm(list(f.keys()), desc="Loading motion module..."):
                 state_dict[key] = f.get_tensor(key)
 
@@ -381,8 +389,12 @@ class AnimateDiffBasePipeline(DiffusionPipeline):
                 ) from model_info_call_error
 
     @classmethod
-    def get_pipeline_or_model_cls(cls, pipeline_cls_name: str) -> "AnimateDiffBasePipeline":
-        omni_vg_module = importlib.import_module(cls.__module__.split(".")[0])
+    def get_pipeline_or_model_cls(
+        cls, pipeline_cls_name: str, library_name: Optional[str] = None
+    ) -> "AnimateDiffBasePipeline":
+        if library_name is None:
+            library_name = cls.__module__.split(".")[0]
+
+        omni_vg_module = importlib.import_module(library_name)
         pipeline_cls = getattr(omni_vg_module, pipeline_cls_name)
         return pipeline_cls
-
