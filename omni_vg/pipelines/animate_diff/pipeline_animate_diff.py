@@ -20,8 +20,9 @@ from diffusers.utils import (
 )
 from diffusers.utils.torch_utils import randn_tensor
 from packaging import version
-from transformers import CLIPImageProcessor, CLIPTextModel, CLIPTokenizer
+from transformers import CLIPTextModel, CLIPTokenizer
 
+from omni_vg.utils.clip_range_scheduler import get_context_scheduler
 from .pipeline_base import AnimateDiffBasePipeline
 from .pipeline_output import AnimateDiffPipelineOutput
 
@@ -544,6 +545,11 @@ class AnimateDiffPipeline(AnimateDiffBasePipeline, TextualInversionLoaderMixin, 
         guidance_scale: float = 7.5,
         negative_prompt: Optional[Union[str, List[str]]] = None,
         num_images_per_prompt: Optional[int] = 1,
+        clip_range_scheduler: str = "uniform",
+        clip_length: int = 16,
+        clip_stride: int = 1,
+        clip_overlap: int = 4,
+        closed_loop: bool = False,
         eta: float = 0.0,
         generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
         latents: Optional[torch.FloatTensor] = None,
@@ -691,6 +697,17 @@ class AnimateDiffPipeline(AnimateDiffBasePipeline, TextualInversionLoaderMixin, 
         extra_step_kwargs = self.prepare_extra_step_kwargs(generator, eta)
 
         # 7. Denoising loop
+        clip_range_scheduler = get_context_scheduler(
+            clip_range_scheduler,
+            num_steps=num_inference_steps,
+            num_frames=num_frames,
+            clip_length=clip_length,
+            clip_stride=clip_stride,
+            clip_overlap=clip_overlap,
+            closed_loop=closed_loop,
+            device=device,
+        )
+
         num_warmup_steps = len(timesteps) - num_inference_steps * self.scheduler.order
         with self.progress_bar(total=num_inference_steps) as progress_bar:
             for i, t in enumerate(timesteps):
@@ -698,30 +715,41 @@ class AnimateDiffPipeline(AnimateDiffBasePipeline, TextualInversionLoaderMixin, 
                 latent_model_input = torch.cat([latents] * 2) if do_classifier_free_guidance else latents
                 latent_model_input = self.scheduler.scale_model_input(latent_model_input, t)
 
-                # predict the noise residual
-                noise_pred: torch.Tensor = self.unet(
-                    latent_model_input,
-                    t,
-                    encoder_hidden_states=prompt_embeds,
-                    cross_attention_kwargs=cross_attention_kwargs,
-                    return_dict=False,
-                )[0]
+                out_latents = torch.zeros_like(latents)
+                out_latents_factor = torch.zeros(*latents.shape[:2], 1, 1, 1, device=device, dtype=torch.long)
 
-                # perform guidance
-                if do_classifier_free_guidance:
-                    noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
-                    noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
+                for latent_indices in clip_range_scheduler.iter(i):
+                    # predict the noise residual
+                    noise_pred: torch.Tensor = self.unet(
+                        latent_model_input[:, latent_indices],
+                        t,
+                        encoder_hidden_states=prompt_embeds,
+                        cross_attention_kwargs=cross_attention_kwargs,
+                        return_dict=False,
+                    )[0]
 
-                noise_pred = noise_pred.flatten(0, 1)
+                    # perform guidance
+                    if do_classifier_free_guidance:
+                        noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
+                        noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
 
-                if do_classifier_free_guidance and guidance_rescale > 0.0:
-                    # Based on 3.4. in https://arxiv.org/pdf/2305.08891.pdf
-                    noise_pred = rescale_noise_cfg(noise_pred, noise_pred_text, guidance_rescale=guidance_rescale)
+                    noise_pred = noise_pred.flatten(0, 1)
 
-                # compute the previous noisy sample x_t -> x_t-1
-                latents = latents.flatten(0, 1)
-                latents = self.scheduler.step(noise_pred, t, latents, **extra_step_kwargs, return_dict=False)[0]
-                latents = latents.reshape(-1, num_frames, *latents.shape[1:])
+                    if do_classifier_free_guidance and guidance_rescale > 0.0:
+                        # Based on 3.4. in https://arxiv.org/pdf/2305.08891.pdf
+                        noise_pred = rescale_noise_cfg(noise_pred, noise_pred_text, guidance_rescale=guidance_rescale)
+
+                    # compute the previous noisy sample x_t -> x_t-1
+                    clip_latents = latents[:, latent_indices]
+                    clip_latents = clip_latents.flatten(0, 1)
+                    clip_latents = self.scheduler.step(noise_pred, t, clip_latents, **extra_step_kwargs, return_dict=False)[0]
+                    clip_latents = clip_latents.reshape(-1, clip_length, *clip_latents.shape[1:])
+
+                    # update the latents
+                    out_latents[:, latent_indices] += clip_latents
+                    out_latents_factor[:, latent_indices] += 1
+
+                latents = out_latents / out_latents_factor.clamp(min=1)
 
                 # call the callback, if provided
                 if i == len(timesteps) - 1 or ((i + 1) > num_warmup_steps and (i + 1) % self.scheduler.order == 0):
