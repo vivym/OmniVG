@@ -29,14 +29,16 @@ from diffusers.models.embeddings import (
     Timesteps,
 )
 from diffusers.models.modeling_utils import ModelMixin
+from diffusers.models.resnet import TemporalConvLayer
 
 from .unet_3d_blocks import (
+    Conv2d,
+    GroupNorm,
+    TransformerTemporalModel,
     UNetMidBlock3D,
     UNetMidBlock3DCrossAttn,
     get_down_block,
     get_up_block,
-    Conv2d,
-    GroupNorm,
 )
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
@@ -207,6 +209,8 @@ class UNet3DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixin)
         mid_block_only_cross_attention: Optional[bool] = None,
         cross_attention_norm: Optional[str] = None,
         addition_embed_type_num_heads: int = 64,
+        input_use_temp_conv: bool = False,
+        input_use_temp_attention: bool = False,
         down_block_use_temp_conv: Tuple[bool, ...] = (True, True, True, True),
         down_block_use_temp_attention: Tuple[bool, ...] = (False, True, True, True),
         mid_block_use_temp_conv: bool = True,
@@ -281,6 +285,24 @@ class UNet3DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixin)
         self.conv_in = Conv2d(
             in_channels, block_out_channels[0], kernel_size=conv_in_kernel, padding=conv_in_padding
         )
+
+        self.input_temp_conv = TemporalConvLayer(
+            block_out_channels[0],
+            block_out_channels[0],
+            dropout=0.1,
+        ) if input_use_temp_conv else nn.Identity()
+
+        self.input_temp_attention = TransformerTemporalModel(
+            num_attention_heads=num_temp_attention_heads,
+            attention_head_dim=block_out_channels[0] // num_temp_attention_heads,
+            in_channels=block_out_channels[0],
+            num_layers=1,
+            cross_attention_dim=temp_cross_attention_dim,
+            norm_num_groups=norm_num_groups,
+            double_self_attention=temp_double_self_attention,
+            use_positional_encoding=use_temp_positional_encoding,
+            positional_encoding_max_length=temp_positional_encoding_max_length,
+        ) if input_use_temp_attention else nn.Identity()
 
         # time
         if time_embedding_type == "fourier":
@@ -397,6 +419,15 @@ class UNet3DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixin)
         elif addition_embed_type == "image_hint":
             # Kandinsky 2.2 ControlNet
             self.add_embedding = ImageHintTimeEmbedding(image_embed_dim=encoder_hid_dim, time_embed_dim=time_embed_dim)
+        elif addition_embed_type == "fps":
+            self.add_fps_proj = Timesteps(timestep_input_dim, flip_sin_to_cos, freq_shift)
+            self.add_embedding = TimestepEmbedding(
+                timestep_input_dim,
+                time_embed_dim,
+                act_fn=act_fn,
+                post_act_fn=timestep_post_act,
+                cond_proj_dim=time_cond_proj_dim,
+            )
         elif addition_embed_type is not None:
             raise ValueError(f"addition_embed_type: {addition_embed_type} must be None, 'text' or 'text_image'.")
 
@@ -1001,6 +1032,14 @@ class UNet3DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixin)
             hint = added_cond_kwargs.get("hint")
             aug_emb, hint = self.add_embedding(image_embs, hint)
             sample = torch.cat([sample, hint], dim=1)
+        elif self.config.addition_embed_type == "fps":
+            if "fps" not in added_cond_kwargs:
+                raise ValueError(
+                    f"{self.__class__} has the config param `addition_embed_type` set to 'fps' which requires the keyword argument `fps` to be passed in `added_cond_kwargs`"
+                )
+            fps = added_cond_kwargs.get("fps")
+            fps_emb = self.add_fps_proj(fps)
+            aug_emb = self.add_embedding(fps_emb)
 
         emb = emb + aug_emb if aug_emb is not None else emb
 
@@ -1028,6 +1067,8 @@ class UNet3DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixin)
             encoder_hidden_states = self.encoder_hid_proj(image_embeds)
         # 2. pre-process
         sample = self.conv_in(sample)
+        sample = self.input_temp_conv(sample)
+        sample = self.input_temp_attention(sample)
 
         # 2.5 GLIGEN position net
         if cross_attention_kwargs is not None and cross_attention_kwargs.get("gligen", None) is not None:

@@ -23,8 +23,8 @@ from packaging import version
 from transformers import CLIPTextModel, CLIPTokenizer
 
 from omni_vg.utils.clip_range_scheduler import ClipRangeScheduler, get_context_scheduler
-from .pipeline_base import AnimateDiffBasePipeline
-from .pipeline_output import AnimateDiffPipelineOutput
+from omni_vg.pipelines.animate_diff.pipeline_base import AnimateDiffBasePipeline
+from .pipeline_output import VideoCrafterPipelineOutput
 
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
@@ -33,9 +33,9 @@ EXAMPLE_DOC_STRING = """
     Examples:
         ```py
         >>> import torch
-        >>> from omni_vg import AnimateDiffPipeline
+        >>> from omni_vg import VideoCrafterPipeline
 
-        >>> pipe = AnimateDiffPipeline.from_pretrained("vivym/animatediff-v15", torch_dtype=torch.float16)
+        >>> pipe = VideoCrafterPipeline.from_pretrained("vivym/videocrafter-1", torch_dtype=torch.float16)
         >>> pipe = pipe.to("cuda")
 
         >>> prompt = "a photo of an astronaut riding a horse on mars"
@@ -58,9 +58,9 @@ def rescale_noise_cfg(noise_cfg, noise_pred_text, guidance_rescale=0.0):
     return noise_cfg
 
 
-class AnimateDiffPipeline(AnimateDiffBasePipeline, TextualInversionLoaderMixin, LoraLoaderMixin, FromSingleFileMixin):
+class VideoCrafterPipeline(AnimateDiffBasePipeline, TextualInversionLoaderMixin, LoraLoaderMixin, FromSingleFileMixin):
     r"""
-    Pipeline for text-to-video generation using AnimateDiff.
+    Pipeline for text-to-video generation using VideoCrafter.
 
     This model inherits from [`AnimateDiffBasePipeline`]. Check the superclass documentation for the generic methods
     implemented for all pipelines (downloading, saving, running on a particular device, etc.).
@@ -541,6 +541,7 @@ class AnimateDiffPipeline(AnimateDiffBasePipeline, TextualInversionLoaderMixin, 
         num_frames: int = 16,
         height: Optional[int] = None,
         width: Optional[int] = None,
+        fps: int = 8,
         num_inference_steps: int = 50,
         guidance_scale: float = 7.5,
         negative_prompt: Optional[Union[str, List[str]]] = None,
@@ -562,7 +563,7 @@ class AnimateDiffPipeline(AnimateDiffBasePipeline, TextualInversionLoaderMixin, 
         cross_attention_kwargs: Optional[Dict[str, Any]] = None,
         guidance_rescale: float = 0.0,
         clip_skip: Optional[int] = None,
-    ) -> AnimateDiffPipelineOutput:
+    ) -> VideoCrafterPipelineOutput:
         r"""
         The call function to the pipeline for generation.
 
@@ -708,6 +709,13 @@ class AnimateDiffPipeline(AnimateDiffBasePipeline, TextualInversionLoaderMixin, 
             device=device,
         )
 
+        fps_tensor = torch.full(
+            batch_size * num_images_per_prompt,
+            fill_value=fps,
+            dtype=torch.long,
+            device=device,
+        )
+
         num_warmup_steps = len(timesteps) - num_inference_steps * self.scheduler.order
         with self.progress_bar(total=num_inference_steps) as progress_bar:
             for i, t in enumerate(timesteps):
@@ -724,6 +732,7 @@ class AnimateDiffPipeline(AnimateDiffBasePipeline, TextualInversionLoaderMixin, 
                         latent_model_input[:, latent_indices],
                         t,
                         encoder_hidden_states=prompt_embeds,
+                        added_cond_kwargs={"fps": fps_tensor},
                         cross_attention_kwargs=cross_attention_kwargs,
                         return_dict=False,
                     )[0]
@@ -785,4 +794,4 @@ class AnimateDiffPipeline(AnimateDiffBasePipeline, TextualInversionLoaderMixin, 
         if not return_dict:
             return (images, None)
 
-        return AnimateDiffPipelineOutput(images=images, nsfw_content_detected=None)
+        return VideoCrafterPipelineOutput(images=images, nsfw_content_detected=None)

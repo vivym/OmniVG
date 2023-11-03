@@ -7,9 +7,9 @@ from diffusers.utils import BaseOutput
 
 
 @dataclass
-class AnimateDiffPipelineOutput(BaseOutput):
+class VideoCrafterPipelineOutput(BaseOutput):
     """
-    Output class for AnimateDiff pipelines.
+    Output class for VideoCrafter pipelines.
 
     Args:
         images (`List[List[PIL.Image.Image]]` or `np.ndarray`)

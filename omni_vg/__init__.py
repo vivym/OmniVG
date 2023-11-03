@@ -1,2 +1,2 @@
 from .models import UNet3DConditionModel
-from .pipelines import AnimateDiffPipeline
+from .pipelines import AnimateDiffPipeline, VideoCrafterPipeline
