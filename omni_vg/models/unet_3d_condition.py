@@ -184,7 +184,7 @@ class UNet3DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixin)
         reverse_transformer_layers_per_block: Optional[Tuple[Tuple[int]]] = None,
         encoder_hid_dim: Optional[int] = None,
         encoder_hid_dim_type: Optional[str] = None,
-        attention_head_dim: Union[int, Tuple[int]] = 8,
+        attention_head_dim: Optional[Union[int, Tuple[int]]] = None,
         num_attention_heads: Optional[Union[int, Tuple[int]]] = None,
         dual_cross_attention: bool = False,
         use_linear_projection: bool = False,
@@ -211,34 +211,25 @@ class UNet3DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixin)
         addition_embed_type_num_heads: int = 64,
         input_use_temp_conv: bool = False,
         input_use_temp_attention: bool = False,
+        input_num_temp_attention_heads: Optional[int] = None,
+        input_temp_attention_head_dim: Optional[int] = None,
         down_block_use_temp_conv: Tuple[bool, ...] = (True, True, True, True),
         down_block_use_temp_attention: Tuple[bool, ...] = (False, True, True, True),
         mid_block_use_temp_conv: bool = True,
         mid_block_use_temp_attention: bool = True,
         up_block_use_temp_conv: Tuple[bool, ...] = (True, True, True, True),
         up_block_use_temp_attention: Tuple[bool, ...] = (False, True, True, True),
-        num_temp_attention_heads: int = 8,
+        num_temp_attention_heads: Optional[Union[int, Tuple[int, ...]]] = None,
+        temp_attention_head_dim: Optional[Union[int, Tuple[int, ...]]] = None,
         temp_cross_attention_dim: Optional[int] = None,
         temp_double_self_attention: bool = True,
-        use_temp_positional_encoding: bool = False,
+        temp_positional_encoding_type: Optional[str] = None,
         temp_positional_encoding_max_length: int = 32,
+        temp_group_norm_3d: bool = False,
     ):
         super().__init__()
 
         self.sample_size = sample_size
-
-        if num_attention_heads is not None:
-            raise ValueError(
-                "At the moment it is not possible to define the number of attention heads via `num_attention_heads` because of a naming issue as described in https://github.com/huggingface/diffusers/issues/2011#issuecomment-1547958131. Passing `num_attention_heads` will only be supported in diffusers v0.19."
-            )
-
-        # If `num_attention_heads` is not defined (which is the case for most models)
-        # it will default to `attention_head_dim`. This looks weird upon first reading it and it is.
-        # The reason for this behavior is to correct for incorrectly named variables that were introduced
-        # when this library was created. The incorrect naming was only discovered much later in https://github.com/huggingface/diffusers/issues/2011#issuecomment-1547958131
-        # Changing `attention_head_dim` to `num_attention_heads` for 40,000+ configurations is too backwards breaking
-        # which is why we correct for the naming here.
-        num_attention_heads = num_attention_heads or attention_head_dim
 
         # Check inputs
         if len(down_block_types) != len(up_block_types):
@@ -256,17 +247,17 @@ class UNet3DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixin)
                 f"Must provide the same number of `only_cross_attention` as `down_block_types`. `only_cross_attention`: {only_cross_attention}. `down_block_types`: {down_block_types}."
             )
 
-        if not isinstance(num_attention_heads, int) and len(num_attention_heads) != len(down_block_types):
+        if isinstance(num_attention_heads, (list ,tuple)) and len(num_attention_heads) != len(down_block_types):
             raise ValueError(
                 f"Must provide the same number of `num_attention_heads` as `down_block_types`. `num_attention_heads`: {num_attention_heads}. `down_block_types`: {down_block_types}."
             )
 
-        if not isinstance(attention_head_dim, int) and len(attention_head_dim) != len(down_block_types):
+        if isinstance(attention_head_dim, (list ,tuple)) and len(attention_head_dim) != len(down_block_types):
             raise ValueError(
                 f"Must provide the same number of `attention_head_dim` as `down_block_types`. `attention_head_dim`: {attention_head_dim}. `down_block_types`: {down_block_types}."
             )
 
-        if isinstance(cross_attention_dim, list) and len(cross_attention_dim) != len(down_block_types):
+        if isinstance(cross_attention_dim, (list ,tuple)) and len(cross_attention_dim) != len(down_block_types):
             raise ValueError(
                 f"Must provide the same number of `cross_attention_dim` as `down_block_types`. `cross_attention_dim`: {cross_attention_dim}. `down_block_types`: {down_block_types}."
             )
@@ -280,6 +271,36 @@ class UNet3DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixin)
                 if isinstance(layer_number_per_block, list):
                     raise ValueError("Must provide 'reverse_transformer_layers_per_block` if using asymmetrical UNet.")
 
+        if num_temp_attention_heads is None and temp_attention_head_dim is None:
+            raise ValueError(
+                "Must provide either `num_temp_attention_heads` or `temp_attention_head_dim` for temporal attention."
+            )
+
+        if (
+            isinstance(num_temp_attention_heads, (list ,tuple)) and len(num_temp_attention_heads) != len(down_block_types)
+        ):
+            raise ValueError(
+                f"Must provide the same number of `num_temp_attention_heads` as `down_block_types`. `num_temp_attention_heads`: {num_temp_attention_heads}. `down_block_types`: {down_block_types}."
+            )
+
+        if (
+            isinstance(temp_attention_head_dim, (list ,tuple)) and len(temp_attention_head_dim) != len(down_block_types)
+        ):
+            raise ValueError(
+                f"Must provide the same number of `temp_attention_head_dim` as `down_block_types`. `temp_attention_head_dim`: {temp_attention_head_dim}. `down_block_types`: {down_block_types}."
+            )
+
+        if input_use_temp_attention and input_num_temp_attention_heads is None and input_temp_attention_head_dim is None:
+            raise ValueError(
+                "Must provide either `input_num_temp_attention_heads` or `input_temp_attention_head_dim` for temporal attention."
+            )
+
+        if not isinstance(num_temp_attention_heads, (list, tuple)):
+            num_temp_attention_heads = (num_temp_attention_heads,) * len(down_block_types)
+
+        if not isinstance(temp_attention_head_dim, (list, tuple)):
+            temp_attention_head_dim = (temp_attention_head_dim,) * len(down_block_types)
+
         # input
         conv_in_padding = (conv_in_kernel - 1) // 2
         self.conv_in = Conv2d(
@@ -290,19 +311,29 @@ class UNet3DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixin)
             block_out_channels[0],
             block_out_channels[0],
             dropout=0.1,
-        ) if input_use_temp_conv else nn.Identity()
+        ) if input_use_temp_conv else None
 
         self.input_temp_attention = TransformerTemporalModel(
-            num_attention_heads=num_temp_attention_heads,
-            attention_head_dim=block_out_channels[0] // num_temp_attention_heads,
+            num_attention_heads=(
+                input_num_temp_attention_heads
+                if input_num_temp_attention_heads is not None
+                else block_out_channels[0] // input_temp_attention_head_dim
+            ),
+            attention_head_dim=(
+                input_temp_attention_head_dim
+                if input_temp_attention_head_dim is not None
+                else block_out_channels[0] // input_num_temp_attention_heads
+            ),
             in_channels=block_out_channels[0],
             num_layers=1,
             cross_attention_dim=temp_cross_attention_dim,
             norm_num_groups=norm_num_groups,
             double_self_attention=temp_double_self_attention,
-            use_positional_encoding=use_temp_positional_encoding,
+            positional_encoding_type=temp_positional_encoding_type,
             positional_encoding_max_length=temp_positional_encoding_max_length,
-        ) if input_use_temp_attention else nn.Identity()
+            group_norm_3d=temp_group_norm_3d,
+            use_linear_projection=False,
+        ) if input_use_temp_attention else None
 
         # time
         if time_embedding_type == "fourier":
@@ -448,10 +479,10 @@ class UNet3DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixin)
         if mid_block_only_cross_attention is None:
             mid_block_only_cross_attention = False
 
-        if isinstance(num_attention_heads, int):
+        if not isinstance(num_attention_heads, (list, tuple)):
             num_attention_heads = (num_attention_heads,) * len(down_block_types)
 
-        if isinstance(attention_head_dim, int):
+        if not isinstance(attention_head_dim, (list, tuple)):
             attention_head_dim = (attention_head_dim,) * len(down_block_types)
 
         if isinstance(cross_attention_dim, int):
@@ -501,15 +532,17 @@ class UNet3DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixin)
                 resnet_skip_time_act=resnet_skip_time_act,
                 resnet_out_scale_factor=resnet_out_scale_factor,
                 cross_attention_norm=cross_attention_norm,
-                attention_head_dim=attention_head_dim[i] if attention_head_dim[i] is not None else output_channel,
+                attention_head_dim=attention_head_dim[i],
                 dropout=dropout,
                 use_temp_conv=down_block_use_temp_conv[i],
                 use_temp_attention=down_block_use_temp_attention[i],
-                num_temp_attention_heads=num_temp_attention_heads,
+                num_temp_attention_heads=num_temp_attention_heads[i],
+                temp_attention_head_dim=temp_attention_head_dim[i],
                 temp_cross_attention_dim=temp_cross_attention_dim,
                 temp_double_self_attention=temp_double_self_attention,
-                use_temp_positional_encoding=use_temp_positional_encoding,
+                temp_positional_encoding_type=temp_positional_encoding_type,
                 temp_positional_encoding_max_length=temp_positional_encoding_max_length,
+                temp_group_norm_3d=temp_group_norm_3d,
             )
             self.down_blocks.append(down_block)
 
@@ -526,6 +559,7 @@ class UNet3DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixin)
                 resnet_time_scale_shift=resnet_time_scale_shift,
                 cross_attention_dim=cross_attention_dim[-1],
                 num_attention_heads=num_attention_heads[-1],
+                attention_head_dim=attention_head_dim[-1],
                 resnet_groups=norm_num_groups,
                 dual_cross_attention=dual_cross_attention,
                 use_linear_projection=use_linear_projection,
@@ -533,11 +567,13 @@ class UNet3DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixin)
                 attention_type=attention_type,
                 use_temp_conv=mid_block_use_temp_conv,
                 use_temp_attention=mid_block_use_temp_attention,
-                num_temp_attention_heads=num_temp_attention_heads,
+                num_temp_attention_heads=num_temp_attention_heads[-1],
+                temp_attention_head_dim=temp_attention_head_dim[-1],
                 temp_cross_attention_dim=temp_cross_attention_dim,
                 temp_double_self_attention=temp_double_self_attention,
-                use_temp_positional_encoding=use_temp_positional_encoding,
+                temp_positional_encoding_type=temp_positional_encoding_type,
                 temp_positional_encoding_max_length=temp_positional_encoding_max_length,
+                temp_group_norm_3d=temp_group_norm_3d,
             )
         elif mid_block_type == "UNetMidBlock3D":
             self.mid_block = UNetMidBlock3D(
@@ -563,6 +599,7 @@ class UNet3DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixin)
         # up
         reversed_block_out_channels = list(reversed(block_out_channels))
         reversed_num_attention_heads = list(reversed(num_attention_heads))
+        reversed_attention_head_dim = list(reversed(attention_head_dim))
         reversed_layers_per_block = list(reversed(layers_per_block))
         reversed_cross_attention_dim = list(reversed(cross_attention_dim))
         reversed_transformer_layers_per_block = (
@@ -571,6 +608,8 @@ class UNet3DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixin)
             else reverse_transformer_layers_per_block
         )
         only_cross_attention = list(reversed(only_cross_attention))
+        reversed_num_temp_attention_heads = list(reversed(num_temp_attention_heads))
+        reversed_temp_attention_head_dim = list(reversed(temp_attention_head_dim))
 
         output_channel = reversed_block_out_channels[0]
         for i, up_block_type in enumerate(up_block_types):
@@ -611,15 +650,17 @@ class UNet3DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixin)
                 resnet_skip_time_act=resnet_skip_time_act,
                 resnet_out_scale_factor=resnet_out_scale_factor,
                 cross_attention_norm=cross_attention_norm,
-                attention_head_dim=attention_head_dim[i] if attention_head_dim[i] is not None else output_channel,
+                attention_head_dim=reversed_attention_head_dim[i],
                 dropout=dropout,
                 use_temp_conv=up_block_use_temp_conv[i],
                 use_temp_attention=up_block_use_temp_attention[i],
-                num_temp_attention_heads=num_temp_attention_heads,
+                num_temp_attention_heads=reversed_num_temp_attention_heads[i],
+                temp_attention_head_dim=reversed_temp_attention_head_dim[i],
                 temp_cross_attention_dim=temp_cross_attention_dim,
                 temp_double_self_attention=temp_double_self_attention,
-                use_temp_positional_encoding=use_temp_positional_encoding,
+                temp_positional_encoding_type=temp_positional_encoding_type,
                 temp_positional_encoding_max_length=temp_positional_encoding_max_length,
+                temp_group_norm_3d=temp_group_norm_3d,
             )
             self.up_blocks.append(up_block)
             prev_output_channel = output_channel
@@ -631,7 +672,6 @@ class UNet3DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixin)
             )
 
             self.conv_act = get_activation(act_fn)
-
         else:
             self.conv_norm_out = None
             self.conv_act = None
@@ -903,7 +943,7 @@ class UNet3DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixin)
         # The overall upsampling factor is equal to 2 ** (# num of upsampling layers).
         # However, the upsampling interpolation output size can be forced to fit any upsampling size
         # on the fly if necessary.
-        default_overall_up_factor = 2**self.num_upsamplers
+        default_overall_up_factor = 2 ** self.num_upsamplers
 
         # upsample size should be forwarded when sample is not a multiple of `default_overall_up_factor`
         forward_upsample_size = False
@@ -1033,7 +1073,7 @@ class UNet3DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixin)
             aug_emb, hint = self.add_embedding(image_embs, hint)
             sample = torch.cat([sample, hint], dim=1)
         elif self.config.addition_embed_type == "fps":
-            if "fps" not in added_cond_kwargs:
+            if added_cond_kwargs is None or "fps" not in added_cond_kwargs:
                 raise ValueError(
                     f"{self.__class__} has the config param `addition_embed_type` set to 'fps' which requires the keyword argument `fps` to be passed in `added_cond_kwargs`"
                 )
@@ -1065,10 +1105,15 @@ class UNet3DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixin)
                 )
             image_embeds = added_cond_kwargs.get("image_embeds")
             encoder_hidden_states = self.encoder_hid_proj(image_embeds)
+
         # 2. pre-process
         sample = self.conv_in(sample)
-        sample = self.input_temp_conv(sample)
-        sample = self.input_temp_attention(sample)
+
+        if self.input_temp_conv is not None:
+            sample = self.input_temp_conv(sample)
+
+        if self.input_temp_attention is not None:
+            sample = self.input_temp_attention(sample, return_dict=False)[0]
 
         # 2.5 GLIGEN position net
         if cross_attention_kwargs is not None and cross_attention_kwargs.get("gligen", None) is not None:

@@ -785,4 +785,4 @@ class AnimateDiffPipeline(AnimateDiffBasePipeline, TextualInversionLoaderMixin, 
         if not return_dict:
             return (images, None)
 
-        return AnimateDiffPipelineOutput(images=images, nsfw_content_detected=None)
+        return AnimateDiffPipelineOutput(frames=images, nsfw_content_detected=None)

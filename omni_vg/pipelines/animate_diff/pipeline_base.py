@@ -203,6 +203,8 @@ class AnimateDiffBasePipeline(DiffusionPipeline):
 
         unet_cls = cls.get_pipeline_or_model_cls(config_dict["_class_name"])
 
+        assert "attention_head_dim" not in unet_init_dict
+
         with init_empty_weights():
             unet = unet_cls(**unet_init_dict)
 

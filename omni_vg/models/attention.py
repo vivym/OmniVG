@@ -1,18 +1,22 @@
 # Adapted from: https://github.com/huggingface/diffusers/blob/main/src/diffusers/models/attention.py
 import math
+from functools import lru_cache
 from typing import Any, Dict, Optional
 
 import torch
 from diffusers.utils import USE_PEFT_BACKEND
 from diffusers.utils.torch_utils import maybe_allow_in_graph
 from diffusers.models.activations import GEGLU, GELU, ApproximateGELU
-from diffusers.models.attention_processor import Attention as Attention_, AttnProcessor
+from diffusers.models.attention_processor import (
+    Attention as Attention_, AttnProcessor, AttnProcessor2_0
+)
 from diffusers.models.lora import LoRACompatibleLinear
 from diffusers.models.normalization import AdaLayerNorm, AdaLayerNormZero
 from torch import nn
+from torch.nn import functional as F
 
 
-class PositionalEncoding(nn.Module):
+class AbsolutePositionalEncoding(nn.Module):
     """
     Implements positional encoding as described in "Attention Is All You Need".
     Adds sinusoidal based positional encodings to the input tensor.
@@ -43,6 +47,215 @@ class PositionalEncoding(nn.Module):
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         hidden_states = hidden_states + self.positional_encoding[:, :hidden_states.shape[1]]
         return self.dropout(hidden_states)
+
+
+class RelativePositionalEncoding(nn.Module):
+    def __init__(self, dim, max_length: int = 32):
+        super().__init__()
+
+        self.dim = dim
+        self.max_length = max_length
+
+        self.positional_encoding = nn.Parameter(torch.zeros(max_length * 2 + 1, dim))
+
+    @lru_cache
+    def _generate_grid_indices(self, length_x: int, length_y: int) -> torch.Tensor:
+        device = self.positional_encoding.device
+        xs = torch.arange(length_x, dtype=torch.long, device=device)
+        ys = torch.arange(length_y, dtype=torch.long, device=device)
+        xy = ys[None, :] - xs[:, None]
+        xy = xy.clamp(-self.max_length, self.max_length)
+        xy = xy + self.max_length
+        return xy
+
+    def forward(self, length_x: int, length_y: int):
+        grid_indices = self._generate_grid_indices(length_x, length_y)
+        return self.positional_encoding[grid_indices]
+
+
+class AttnWithRelativePEProcessor:
+    r"""
+    Default processor for performing attention-related computations.
+    """
+
+    def __call__(
+        self,
+        attn: "Attention",
+        hidden_states: torch.FloatTensor,
+        encoder_hidden_states: Optional[torch.FloatTensor] = None,
+        attention_mask: Optional[torch.FloatTensor] = None,
+        temb: Optional[torch.FloatTensor] = None,
+        scale: float = 1.0,
+        pos_enc_k: Optional[torch.FloatTensor] = None,
+        pos_enc_v: Optional[torch.FloatTensor] = None,
+    ) -> torch.Tensor:
+        residual = hidden_states
+
+        args = () if USE_PEFT_BACKEND else (scale,)
+
+        if attn.spatial_norm is not None:
+            hidden_states = attn.spatial_norm(hidden_states, temb)
+
+        input_ndim = hidden_states.ndim
+
+        if input_ndim == 4:
+            batch_size, channel, height, width = hidden_states.shape
+            hidden_states = hidden_states.view(batch_size, channel, height * width).transpose(1, 2)
+
+        batch_size, sequence_length, _ = (
+            hidden_states.shape if encoder_hidden_states is None else encoder_hidden_states.shape
+        )
+        attention_mask = attn.prepare_attention_mask(attention_mask, sequence_length, batch_size)
+
+        if attn.group_norm is not None:
+            hidden_states = attn.group_norm(hidden_states.transpose(1, 2)).transpose(1, 2)
+
+        query = attn.to_q(hidden_states, *args)
+
+        if encoder_hidden_states is None:
+            encoder_hidden_states = hidden_states
+        elif attn.norm_cross:
+            encoder_hidden_states = attn.norm_encoder_hidden_states(encoder_hidden_states)
+
+        key = attn.to_k(encoder_hidden_states, *args)
+        value = attn.to_v(encoder_hidden_states, *args)
+
+        query = attn.head_to_batch_dim(query)
+        key = attn.head_to_batch_dim(key)
+        value = attn.head_to_batch_dim(value)
+
+        if pos_enc_k is not None:
+            attn_bias = torch.einsum("b t c, t s c -> b t s", query, pos_enc_k) * attn.scale
+
+            if attention_mask is not None:
+                assert attention_mask.dtype != torch.bool, type(attention_mask.dtype)
+                attn_bias = attn_bias + attention_mask
+        else:
+            attn_bias = attention_mask
+
+        attention_probs = attn.get_attention_scores(query, key, attn_bias)
+        hidden_states = torch.bmm(attention_probs, value)
+
+        if pos_enc_v is not None:
+            hidden_states += torch.einsum("b t s, t s c -> b t c", attention_probs, pos_enc_v)
+
+        hidden_states = attn.batch_to_head_dim(hidden_states)
+
+        # linear proj
+        hidden_states = attn.to_out[0](hidden_states, *args)
+        # dropout
+        hidden_states = attn.to_out[1](hidden_states)
+
+        if input_ndim == 4:
+            hidden_states = hidden_states.transpose(-1, -2).reshape(batch_size, channel, height, width)
+
+        if attn.residual_connection:
+            hidden_states = hidden_states + residual
+
+        hidden_states = hidden_states / attn.rescale_output_factor
+
+        return hidden_states
+
+
+class AttnWithRelativePEProcessor2_0:
+    r"""
+    Processor for implementing scaled dot-product attention with relative positional encoding
+    (enabled by default if you're using PyTorch 2.0).
+    """
+
+    def __init__(self):
+        if not hasattr(F, "scaled_dot_product_attention"):
+            raise ImportError("AttnProcessor2_0 requires PyTorch 2.0, to use it, please upgrade PyTorch to 2.0.")
+
+    def __call__(
+        self,
+        attn: "Attention",
+        hidden_states: torch.FloatTensor,
+        encoder_hidden_states: Optional[torch.FloatTensor] = None,
+        attention_mask: Optional[torch.FloatTensor] = None,
+        temb: Optional[torch.FloatTensor] = None,
+        scale: float = 1.0,
+        pos_enc_k: Optional[torch.FloatTensor] = None,
+        pos_enc_v: Optional[torch.FloatTensor] = None,
+    ) -> torch.FloatTensor:
+        residual = hidden_states
+
+        if attn.spatial_norm is not None:
+            hidden_states = attn.spatial_norm(hidden_states, temb)
+
+        input_ndim = hidden_states.ndim
+
+        if input_ndim == 4:
+            batch_size, channel, height, width = hidden_states.shape
+            hidden_states = hidden_states.view(batch_size, channel, height * width).transpose(1, 2)
+
+        batch_size, sequence_length, _ = (
+            hidden_states.shape if encoder_hidden_states is None else encoder_hidden_states.shape
+        )
+
+        if attention_mask is not None:
+            attention_mask = attn.prepare_attention_mask(attention_mask, sequence_length, batch_size)
+            # scaled_dot_product_attention expects attention_mask shape to be
+            # (batch, heads, source_length, target_length)
+            attention_mask = attention_mask.view(batch_size, attn.heads, -1, attention_mask.shape[-1])
+
+        if attn.group_norm is not None:
+            hidden_states = attn.group_norm(hidden_states.transpose(1, 2)).transpose(1, 2)
+
+        args = () if USE_PEFT_BACKEND else (scale,)
+        query = attn.to_q(hidden_states, *args)
+
+        if encoder_hidden_states is None:
+            encoder_hidden_states = hidden_states
+        elif attn.norm_cross:
+            encoder_hidden_states = attn.norm_encoder_hidden_states(encoder_hidden_states)
+
+        key = (
+            attn.to_k(encoder_hidden_states, scale=scale) if not USE_PEFT_BACKEND else attn.to_k(encoder_hidden_states)
+        )
+        value = (
+            attn.to_v(encoder_hidden_states, scale=scale) if not USE_PEFT_BACKEND else attn.to_v(encoder_hidden_states)
+        )
+
+        inner_dim = key.shape[-1]
+        head_dim = inner_dim // attn.heads
+
+        query = query.view(batch_size, -1, attn.heads, head_dim).transpose(1, 2)
+
+        key = key.view(batch_size, -1, attn.heads, head_dim).transpose(1, 2)
+        value = value.view(batch_size, -1, attn.heads, head_dim).transpose(1, 2)
+
+        attn_bias = torch.einsum("b t c, t s c-> b t s", query, pos_enc_k) * attn.scale
+
+        if attention_mask is not None:
+            assert attention_mask.dtype != torch.bool, type(attention_mask.dtype)
+            attn_bias = attn_bias + attention_mask
+
+        # the output of sdp = (batch, num_heads, seq_len, head_dim)
+        # TODO: add support for attn.scale when we move to Torch 2.1
+        hidden_states = F.scaled_dot_product_attention(
+            query, key, value, attn_mask=attn_bias, dropout_p=0.0, is_causal=False
+        )
+
+        hidden_states = hidden_states.transpose(1, 2).reshape(batch_size, -1, attn.heads * head_dim)
+        hidden_states = hidden_states.to(query.dtype)
+
+        # linear proj
+        hidden_states = (
+            attn.to_out[0](hidden_states, scale=scale) if not USE_PEFT_BACKEND else attn.to_out[0](hidden_states)
+        )
+        # dropout
+        hidden_states = attn.to_out[1](hidden_states)
+
+        if input_ndim == 4:
+            hidden_states = hidden_states.transpose(-1, -2).reshape(batch_size, channel, height, width)
+
+        if attn.residual_connection:
+            hidden_states = hidden_states + residual
+
+        hidden_states = hidden_states / attn.rescale_output_factor
+
+        return hidden_states
 
 
 @maybe_allow_in_graph
@@ -120,9 +333,29 @@ class Attention(Attention_):
         residual_connection: bool = False,
         _from_deprecated_attn_block: bool = False,
         processor: Optional["AttnProcessor"] = None,
-        use_positional_encoding: bool = False,
+        positional_encoding_type: Optional[str] = None,
         positional_encoding_max_length: int = 32,
     ):
+        # We use the AttnProcessor2_0 by default when torch 2.x is used which uses
+        # torch.nn.functional.scaled_dot_product_attention for native Flash/memory_efficient_attention
+        # but only if it has the default `scale` argument. TODO remove scale_qk check when we move to torch 2.1
+        if processor is None:
+            processor = (
+                AttnProcessor2_0() if hasattr(F, "scaled_dot_product_attention") and scale_qk else AttnProcessor()
+            )
+
+        if positional_encoding_type == "relative_kv":
+            if isinstance(processor, AttnProcessor):
+                processor = AttnWithRelativePEProcessor()
+            elif isinstance(processor, AttnProcessor2_0):
+                processor = AttnWithRelativePEProcessor2_0()
+            else:
+                raise ValueError(
+                    f"`processor` should be an instance of `AttnProcessor` or `AttnProcessor2_0`, but got {processor}."
+                )
+            # TODO: remove this once we have a better way to handle this
+            processor = AttnWithRelativePEProcessor()
+
         super().__init__(
             query_dim=query_dim,
             cross_attention_dim=cross_attention_dim,
@@ -147,14 +380,24 @@ class Attention(Attention_):
             processor=processor,
         )
 
-        if use_positional_encoding:
-            self.positional_encoding = PositionalEncoding(
+        self.positional_encoding_type = positional_encoding_type
+        self.positional_encoding_max_length = positional_encoding_max_length
+
+        if positional_encoding_type == "absolute":
+            self.positional_encoding = AbsolutePositionalEncoding(
                 dim=query_dim,
                 dropout=0.,
                 max_length=positional_encoding_max_length,
             )
-        else:
-            self.positional_encoding = None
+        elif positional_encoding_type == "relative_kv":
+            self.positional_encoding_k = RelativePositionalEncoding(
+                dim=dim_head,
+                max_length=positional_encoding_max_length,
+            )
+            self.positional_encoding_v = RelativePositionalEncoding(
+                dim=dim_head,
+                max_length=positional_encoding_max_length,
+            )
 
     def forward(
         self,
@@ -163,8 +406,15 @@ class Attention(Attention_):
         attention_mask: Optional[torch.FloatTensor] = None,
         **cross_attention_kwargs,
     ) -> torch.Tensor:
-        if self.positional_encoding is not None:
+        if self.positional_encoding_type == "absolute":
             hidden_states = self.positional_encoding(hidden_states)
+        elif self.positional_encoding_type == "relative_kv":
+            length = hidden_states.shape[1]
+            pos_enc_k = self.positional_encoding_k(length, length)
+            pos_enc_v = self.positional_encoding_v(length, length)
+
+            cross_attention_kwargs["pos_enc_k"] = pos_enc_k
+            cross_attention_kwargs["pos_enc_v"] = pos_enc_v
 
         return super().forward(
             hidden_states=hidden_states,
@@ -265,7 +515,7 @@ class BasicTransformerBlock(nn.Module):
         norm_type: str = "layer_norm",
         final_dropout: bool = False,
         attention_type: str = "default",
-        use_positional_encoding: bool = False,
+        positional_encoding_type: Optional[str] = None,
         positional_encoding_max_length: int = 32,
     ):
         super().__init__()
@@ -296,7 +546,7 @@ class BasicTransformerBlock(nn.Module):
             bias=attention_bias,
             cross_attention_dim=cross_attention_dim if only_cross_attention else None,
             upcast_attention=upcast_attention,
-            use_positional_encoding=use_positional_encoding,
+            positional_encoding_type=positional_encoding_type,
             positional_encoding_max_length=positional_encoding_max_length,
         )
 
@@ -318,7 +568,7 @@ class BasicTransformerBlock(nn.Module):
                 dropout=dropout,
                 bias=attention_bias,
                 upcast_attention=upcast_attention,
-                use_positional_encoding=use_positional_encoding,
+                positional_encoding_type=positional_encoding_type,
                 positional_encoding_max_length=positional_encoding_max_length,
             )  # is self-attn if encoder_hidden_states is none
         else:

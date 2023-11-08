@@ -4,6 +4,7 @@ from typing import Any, Callable, Dict, List, Optional, Union, Tuple
 
 import numpy as np
 import torch
+from diffusers import DiffusionPipeline
 from diffusers.configuration_utils import FrozenDict
 from diffusers.image_processor import VaeImageProcessor
 from diffusers.loaders import FromSingleFileMixin, LoraLoaderMixin, TextualInversionLoaderMixin
@@ -23,7 +24,6 @@ from packaging import version
 from transformers import CLIPTextModel, CLIPTokenizer
 
 from omni_vg.utils.clip_range_scheduler import ClipRangeScheduler, get_context_scheduler
-from omni_vg.pipelines.animate_diff.pipeline_base import AnimateDiffBasePipeline
 from .pipeline_output import VideoCrafterPipelineOutput
 
 
@@ -58,11 +58,11 @@ def rescale_noise_cfg(noise_cfg, noise_pred_text, guidance_rescale=0.0):
     return noise_cfg
 
 
-class VideoCrafterPipeline(AnimateDiffBasePipeline, TextualInversionLoaderMixin, LoraLoaderMixin, FromSingleFileMixin):
+class VideoCrafterPipeline(DiffusionPipeline, TextualInversionLoaderMixin, LoraLoaderMixin, FromSingleFileMixin):
     r"""
     Pipeline for text-to-video generation using VideoCrafter.
 
-    This model inherits from [`AnimateDiffBasePipeline`]. Check the superclass documentation for the generic methods
+    This model inherits from [`DiffusionPipeline`]. Check the superclass documentation for the generic methods
     implemented for all pipelines (downloading, saving, running on a particular device, etc.).
 
     The pipeline also inherits the following loading methods:
@@ -539,9 +539,9 @@ class VideoCrafterPipeline(AnimateDiffBasePipeline, TextualInversionLoaderMixin,
         self,
         prompt: Union[str, List[str]] = None,
         num_frames: int = 16,
+        fps: int = 8,
         height: Optional[int] = None,
         width: Optional[int] = None,
-        fps: int = 8,
         num_inference_steps: int = 50,
         guidance_scale: float = 7.5,
         negative_prompt: Optional[Union[str, List[str]]] = None,
@@ -549,7 +549,7 @@ class VideoCrafterPipeline(AnimateDiffBasePipeline, TextualInversionLoaderMixin,
         clip_range_scheduler: str = "uniform",
         clip_length: int = 16,
         clip_stride: int = 1,
-        clip_overlap: int = 4,
+        clip_overlap: int = 8,
         closed_loop: bool = False,
         eta: float = 0.0,
         generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
@@ -710,7 +710,7 @@ class VideoCrafterPipeline(AnimateDiffBasePipeline, TextualInversionLoaderMixin,
         )
 
         fps_tensor = torch.full(
-            batch_size * num_images_per_prompt,
+            (batch_size * num_images_per_prompt,),
             fill_value=fps,
             dtype=torch.long,
             device=device,
@@ -794,4 +794,4 @@ class VideoCrafterPipeline(AnimateDiffBasePipeline, TextualInversionLoaderMixin,
         if not return_dict:
             return (images, None)
 
-        return VideoCrafterPipelineOutput(images=images, nsfw_content_detected=None)
+        return VideoCrafterPipelineOutput(frames=images, nsfw_content_detected=None)

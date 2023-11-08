@@ -50,19 +50,14 @@ def get_down_block(
     dropout: float = 0.0,
     use_temp_conv: bool = True,
     use_temp_attention: bool = True,
-    num_temp_attention_heads: int = 8,
+    num_temp_attention_heads: Optional[int] = None,
+    temp_attention_head_dim: Optional[int] = None,
     temp_cross_attention_dim: Optional[int] = None,
     temp_double_self_attention: bool = True,
-    use_temp_positional_encoding: bool = False,
+    temp_positional_encoding_type: Optional[str] = None,
     temp_positional_encoding_max_length: int = 32,
+    temp_group_norm_3d: bool = False,
 ):
-    # If attn head dim is not defined, we default it to the number of heads
-    if attention_head_dim is None:
-        logger.warn(
-            f"It is recommended to provide `attention_head_dim` when calling `get_down_block`. Defaulting `attention_head_dim` to {num_attention_heads}."
-        )
-        attention_head_dim = num_attention_heads
-
     down_block_type = down_block_type[7:] if down_block_type.startswith("UNetRes") else down_block_type
     if down_block_type == "DownBlock3D":
         return DownBlock3D(
@@ -80,10 +75,12 @@ def get_down_block(
             use_temp_conv=use_temp_conv,
             use_temp_attention=use_temp_attention,
             num_temp_attention_heads=num_temp_attention_heads,
+            temp_attention_head_dim=temp_attention_head_dim,
             temp_cross_attention_dim=temp_cross_attention_dim,
             temp_double_self_attention=temp_double_self_attention,
-            use_temp_positional_encoding=use_temp_positional_encoding,
+            temp_positional_encoding_type=temp_positional_encoding_type,
             temp_positional_encoding_max_length=temp_positional_encoding_max_length,
+            temp_group_norm_3d=temp_group_norm_3d,
         )
     elif down_block_type == "CrossAttnDownBlock3D":
         if cross_attention_dim is None:
@@ -102,6 +99,7 @@ def get_down_block(
             downsample_padding=downsample_padding,
             cross_attention_dim=cross_attention_dim,
             num_attention_heads=num_attention_heads,
+            attention_head_dim=attention_head_dim,
             dual_cross_attention=dual_cross_attention,
             use_linear_projection=use_linear_projection,
             only_cross_attention=only_cross_attention,
@@ -111,10 +109,12 @@ def get_down_block(
             use_temp_conv=use_temp_conv,
             use_temp_attention=use_temp_attention,
             num_temp_attention_heads=num_temp_attention_heads,
+            temp_attention_head_dim=temp_attention_head_dim,
             temp_cross_attention_dim=temp_cross_attention_dim,
             temp_double_self_attention=temp_double_self_attention,
-            use_temp_positional_encoding=use_temp_positional_encoding,
+            temp_positional_encoding_type=temp_positional_encoding_type,
             temp_positional_encoding_max_length=temp_positional_encoding_max_length,
+            temp_group_norm_3d=temp_group_norm_3d,
         )
     else:
         raise ValueError(f"{down_block_type} does not exist.")
@@ -149,19 +149,14 @@ def get_up_block(
     dropout: float = 0.0,
     use_temp_conv: bool = True,
     use_temp_attention: bool = True,
-    num_temp_attention_heads: int = 8,
+    num_temp_attention_heads: int = None,
+    temp_attention_head_dim: Optional[int] = None,
     temp_cross_attention_dim: Optional[int] = None,
     temp_double_self_attention: bool = True,
-    use_temp_positional_encoding: bool = False,
+    temp_positional_encoding_type: Optional[str] = None,
     temp_positional_encoding_max_length: int = 32,
+    temp_group_norm_3d: bool = False,
 ) -> nn.Module:
-    # If attn head dim is not defined, we default it to the number of heads
-    if attention_head_dim is None:
-        logger.warn(
-            f"It is recommended to provide `attention_head_dim` when calling `get_up_block`. Defaulting `attention_head_dim` to {num_attention_heads}."
-        )
-        attention_head_dim = num_attention_heads
-
     up_block_type = up_block_type[7:] if up_block_type.startswith("UNetRes") else up_block_type
     if up_block_type == "UpBlock3D":
         return UpBlock3D(
@@ -182,8 +177,9 @@ def get_up_block(
             num_temp_attention_heads=num_temp_attention_heads,
             temp_cross_attention_dim=temp_cross_attention_dim,
             temp_double_self_attention=temp_double_self_attention,
-            use_temp_positional_encoding=use_temp_positional_encoding,
+            temp_positional_encoding_type=temp_positional_encoding_type,
             temp_positional_encoding_max_length=temp_positional_encoding_max_length,
+            temp_group_norm_3d=temp_group_norm_3d,
         )
     elif up_block_type == "CrossAttnUpBlock3D":
         if cross_attention_dim is None:
@@ -203,6 +199,7 @@ def get_up_block(
             resnet_groups=resnet_groups,
             cross_attention_dim=cross_attention_dim,
             num_attention_heads=num_attention_heads,
+            attention_head_dim=attention_head_dim,
             dual_cross_attention=dual_cross_attention,
             use_linear_projection=use_linear_projection,
             only_cross_attention=only_cross_attention,
@@ -212,10 +209,12 @@ def get_up_block(
             use_temp_conv=use_temp_conv,
             use_temp_attention=use_temp_attention,
             num_temp_attention_heads=num_temp_attention_heads,
+            temp_attention_head_dim=temp_attention_head_dim,
             temp_cross_attention_dim=temp_cross_attention_dim,
             temp_double_self_attention=temp_double_self_attention,
-            use_temp_positional_encoding=use_temp_positional_encoding,
+            temp_positional_encoding_type=temp_positional_encoding_type,
             temp_positional_encoding_max_length=temp_positional_encoding_max_length,
+            temp_group_norm_3d=temp_group_norm_3d,
         )
     else:
         raise ValueError(f"{up_block_type} does not exist.")
@@ -229,10 +228,15 @@ class Conv2d(nn.Conv2d):
 
 
 class GroupNorm(nn.GroupNorm):
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        num_frames = x.shape[1]
-        x = super().forward(x.flatten(0, 1))
-        return x.reshape(-1, num_frames, *x.shape[1:])
+    def forward(self, x: torch.Tensor, group_norm_3d: bool = False) -> torch.Tensor:
+        if group_norm_3d:
+            x = x.transpose(1, 2)
+            x = super().forward(x)
+            return x.transpose(1, 2)
+        else:
+            num_frames = x.shape[1]
+            x = super().forward(x.flatten(0, 1))
+            return x.reshape(-1, num_frames, *x.shape[1:])
 
 
 class ResnetBlock2D(ResnetBlock2D_):
@@ -283,6 +287,7 @@ class Transformer2DModel(Transformer2DModel_):
             encoder_attention_mask=encoder_attention_mask,
             return_dict=return_dict,
         )
+
         if return_dict:
             outputs.sample = outputs.sample.reshape(-1, num_frames, *outputs.sample.shape[1:])
         else:
@@ -376,8 +381,10 @@ class TransformerTemporalModel(nn.Module):
         activation_fn: str = "geglu",
         norm_elementwise_affine: bool = True,
         double_self_attention: bool = True,
-        use_positional_encoding: bool = False,
+        positional_encoding_type: Optional[str] = None,
         positional_encoding_max_length: int = 32,
+        group_norm_3d: bool = False,
+        use_linear_projection: bool = True,
     ):
         super().__init__()
 
@@ -387,8 +394,14 @@ class TransformerTemporalModel(nn.Module):
 
         self.in_channels = in_channels
 
+        self.group_norm_3d = group_norm_3d
+        self.use_linear_projection = use_linear_projection
+
         self.norm = GroupNorm(num_groups=norm_num_groups, num_channels=in_channels, eps=1e-6, affine=True)
-        self.proj_in = nn.Linear(in_channels, inner_dim)
+        if use_linear_projection:
+            self.proj_in = nn.Linear(in_channels, inner_dim)
+        else:
+            self.proj_in = nn.Conv1d(in_channels, inner_dim, kernel_size=1)
 
         # 3. Define transformers blocks
         self.transformer_blocks = nn.ModuleList(
@@ -403,14 +416,17 @@ class TransformerTemporalModel(nn.Module):
                     attention_bias=attention_bias,
                     double_self_attention=double_self_attention,
                     norm_elementwise_affine=norm_elementwise_affine,
-                    use_positional_encoding=use_positional_encoding,
+                    positional_encoding_type=positional_encoding_type,
                     positional_encoding_max_length=positional_encoding_max_length,
                 )
                 for d in range(num_layers)
             ]
         )
 
-        self.proj_out = nn.Linear(inner_dim, in_channels)
+        if use_linear_projection:
+            self.proj_out = nn.Linear(inner_dim, in_channels)
+        else:
+            self.proj_out = nn.Conv1d(inner_dim, in_channels, kernel_size=1)
 
     def forward(
         self,
@@ -453,11 +469,17 @@ class TransformerTemporalModel(nn.Module):
 
         residual = hidden_states
 
-        hidden_states = self.norm(hidden_states)
+        hidden_states = self.norm(hidden_states, group_norm_3d=self.group_norm_3d)
 
         hidden_states = hidden_states.permute(0, 3, 4, 1, 2).reshape(batch_size * height * width, num_frames, channel)
 
+        if not self.use_linear_projection:
+            hidden_states = hidden_states.transpose(1, 2)
+
         hidden_states = self.proj_in(hidden_states)
+
+        if not self.use_linear_projection:
+            hidden_states = hidden_states.transpose(1, 2)
 
         # 2. Blocks
         for block in self.transformer_blocks:
@@ -470,7 +492,12 @@ class TransformerTemporalModel(nn.Module):
             )
 
         # 3. Output
+        if not self.use_linear_projection:
+            hidden_states = hidden_states.transpose(1, 2)
         hidden_states = self.proj_out(hidden_states)
+        if not self.use_linear_projection:
+            hidden_states = hidden_states.transpose(1, 2)
+
         hidden_states = (
             hidden_states[None, None, :]
             .reshape(batch_size, height, width, num_frames, channel)
@@ -624,7 +651,8 @@ class UNetMidBlock3DCrossAttn(nn.Module):
         resnet_act_fn: str = "swish",
         resnet_groups: int = 32,
         resnet_pre_norm: bool = True,
-        num_attention_heads: int = 1,
+        num_attention_heads: Optional[int] = None,
+        attention_head_dim: Optional[int] = None,
         output_scale_factor: float = 1.0,
         cross_attention_dim: int = 1280,
         dual_cross_attention: bool = False,
@@ -633,11 +661,13 @@ class UNetMidBlock3DCrossAttn(nn.Module):
         attention_type: str = "default",
         use_temp_conv: bool = True,
         use_temp_attention: bool = True,
-        num_temp_attention_heads: int = 8,
+        num_temp_attention_heads: Optional[int] = None,
+        temp_attention_head_dim: Optional[int] = None,
         temp_cross_attention_dim: Optional[int] = None,
         temp_double_self_attention: bool = True,
-        use_temp_positional_encoding: bool = False,
+        temp_positional_encoding_type: Optional[str] = None,
         temp_positional_encoding_max_length: int = 32,
+        temp_group_norm_3d: bool = False,
     ):
         super().__init__()
 
@@ -648,6 +678,27 @@ class UNetMidBlock3DCrossAttn(nn.Module):
         # support for variable transformer layers per block
         if isinstance(transformer_layers_per_block, int):
             transformer_layers_per_block = [transformer_layers_per_block] * num_layers
+
+        if num_attention_heads is None and attention_head_dim is None:
+            raise ValueError("Either `num_attention_heads` or `attention_head_dim` must be specified.")
+
+        if num_attention_heads is None:
+            num_attention_heads = in_channels // attention_head_dim
+
+        if attention_head_dim is None:
+            attention_head_dim = in_channels // num_attention_heads
+
+        if use_temp_attention:
+            if num_temp_attention_heads is None and temp_attention_head_dim is None:
+                raise ValueError(
+                    "If `use_temp_attention=True`, either `num_temp_attention_heads` or `temp_attention_head_dim` must be specified."
+                )
+
+            if num_temp_attention_heads is None:
+                num_temp_attention_heads = in_channels // temp_attention_head_dim
+
+            if temp_attention_head_dim is None:
+                temp_attention_head_dim = in_channels // num_temp_attention_heads
 
         # there is always at least one resnet
         resnets = [
@@ -669,7 +720,7 @@ class UNetMidBlock3DCrossAttn(nn.Module):
                 in_channels,
                 in_channels,
                 dropout=0.1,
-            ) if use_temp_conv else nn.Identity()
+            ) if use_temp_conv else None
         ]
         attentions = []
         temp_attentions = []
@@ -679,7 +730,7 @@ class UNetMidBlock3DCrossAttn(nn.Module):
                 attentions.append(
                     Transformer2DModel(
                         num_attention_heads,
-                        in_channels // num_attention_heads,
+                        attention_head_dim,
                         in_channels=in_channels,
                         num_layers=transformer_layers_per_block[i],
                         cross_attention_dim=cross_attention_dim,
@@ -693,7 +744,7 @@ class UNetMidBlock3DCrossAttn(nn.Module):
                 attentions.append(
                     DualTransformer2DModel(
                         num_attention_heads,
-                        in_channels // num_attention_heads,
+                        attention_head_dim,
                         in_channels=in_channels,
                         num_layers=1,
                         cross_attention_dim=cross_attention_dim,
@@ -704,15 +755,16 @@ class UNetMidBlock3DCrossAttn(nn.Module):
             temp_attentions.append(
                 TransformerTemporalModel(
                     num_temp_attention_heads,
-                    in_channels // num_temp_attention_heads,
+                    temp_attention_head_dim,
                     in_channels=in_channels,
                     num_layers=1,
                     cross_attention_dim=temp_cross_attention_dim,
                     norm_num_groups=resnet_groups,
                     double_self_attention=temp_double_self_attention,
-                    use_positional_encoding=use_temp_positional_encoding,
+                    positional_encoding_type=temp_positional_encoding_type,
                     positional_encoding_max_length=temp_positional_encoding_max_length,
-                ) if use_temp_attention else nn.Identity()
+                    group_norm_3d=temp_group_norm_3d,
+                ) if use_temp_attention else None
             )
 
             resnets.append(
@@ -735,7 +787,7 @@ class UNetMidBlock3DCrossAttn(nn.Module):
                     in_channels,
                     in_channels,
                     dropout=0.1,
-                ) if use_temp_conv else nn.Identity()
+                ) if use_temp_conv else None
             )
 
         self.attentions = nn.ModuleList(attentions)
@@ -756,7 +808,8 @@ class UNetMidBlock3DCrossAttn(nn.Module):
     ) -> torch.FloatTensor:
         lora_scale = cross_attention_kwargs.get("scale", 1.0) if cross_attention_kwargs is not None else 1.0
         hidden_states = self.resnets[0](hidden_states, temb, scale=lora_scale)
-        hidden_states = self.temp_convs[0](hidden_states)
+        if self.temp_convs[0] is not None:
+            hidden_states = self.temp_convs[0](hidden_states)
 
         for attn, temp_attn, resnet, temp_conv in zip(
             self.attentions, self.temp_attentions, self.resnets[1:], self.temp_convs[1:]
@@ -781,20 +834,22 @@ class UNetMidBlock3DCrossAttn(nn.Module):
                     encoder_attention_mask=encoder_attention_mask,
                     return_dict=False,
                 )[0]
-                hidden_states = temp_attn(
-                    hidden_states, cross_attention_kwargs=cross_attention_kwargs, return_dict=False
-                )[0]
+                if temp_attn is not None:
+                    hidden_states = temp_attn(
+                        hidden_states, cross_attention_kwargs=cross_attention_kwargs, return_dict=False
+                    )[0]
                 hidden_states = torch.utils.checkpoint.checkpoint(
                     create_custom_forward(resnet),
                     hidden_states,
                     temb,
                     **ckpt_kwargs,
                 )
-                hidden_states = torch.utils.checkpoint.checkpoint(
-                    create_custom_forward(temp_conv),
-                    hidden_states,
-                    **ckpt_kwargs,
-                )
+                if temp_conv is not None:
+                    hidden_states = torch.utils.checkpoint.checkpoint(
+                        create_custom_forward(temp_conv),
+                        hidden_states,
+                        **ckpt_kwargs,
+                    )
             else:
                 hidden_states = attn(
                     hidden_states,
@@ -804,11 +859,13 @@ class UNetMidBlock3DCrossAttn(nn.Module):
                     encoder_attention_mask=encoder_attention_mask,
                     return_dict=False,
                 )[0]
-                hidden_states = temp_attn(
-                    hidden_states, cross_attention_kwargs=cross_attention_kwargs, return_dict=False
-                )[0]
+                if temp_attn is not None:
+                    hidden_states = temp_attn(
+                        hidden_states, cross_attention_kwargs=cross_attention_kwargs, return_dict=False
+                    )[0]
                 hidden_states = resnet(hidden_states, temb, scale=lora_scale)
-                hidden_states = temp_conv(hidden_states)
+                if temp_conv is not None:
+                    hidden_states = temp_conv(hidden_states)
 
         return hidden_states
 
@@ -827,7 +884,8 @@ class CrossAttnDownBlock3D(nn.Module):
         resnet_act_fn: str = "swish",
         resnet_groups: int = 32,
         resnet_pre_norm: bool = True,
-        num_attention_heads: int = 1,
+        num_attention_heads: Optional[int] = None,
+        attention_head_dim: Optional[int] = None,
         cross_attention_dim: int = 1280,
         output_scale_factor: float = 1.0,
         downsample_padding: int = 1,
@@ -839,13 +897,37 @@ class CrossAttnDownBlock3D(nn.Module):
         attention_type: str = "default",
         use_temp_conv: bool = True,
         use_temp_attention: bool = True,
-        num_temp_attention_heads: int = 8,
+        num_temp_attention_heads: Optional[int] = None,
+        temp_attention_head_dim: Optional[int] = None,
         temp_cross_attention_dim: Optional[int] = None,
         temp_double_self_attention: bool = True,
-        use_temp_positional_encoding: bool = False,
+        temp_positional_encoding_type: Optional[str] = None,
         temp_positional_encoding_max_length: int = 32,
+        temp_group_norm_3d: bool = False,
     ):
         super().__init__()
+
+        if num_attention_heads is None and attention_head_dim is None:
+            raise ValueError("Either `num_attention_heads` or `attention_head_dim` must be specified.")
+
+        if num_attention_heads is None:
+            num_attention_heads = out_channels // attention_head_dim
+
+        if attention_head_dim is None:
+            attention_head_dim = out_channels // num_attention_heads
+
+        if use_temp_attention:
+            if num_temp_attention_heads is None and temp_attention_head_dim is None:
+                raise ValueError(
+                    "If `use_temp_attention=True`, either `num_temp_attention_heads` or `temp_attention_head_dim` must be specified."
+                )
+
+            if num_temp_attention_heads is None:
+                num_temp_attention_heads = out_channels // temp_attention_head_dim
+
+            if temp_attention_head_dim is None:
+                temp_attention_head_dim = out_channels // num_temp_attention_heads
+
         resnets = []
         temp_convs = []
         attentions = []
@@ -878,14 +960,14 @@ class CrossAttnDownBlock3D(nn.Module):
                     out_channels,
                     out_channels,
                     dropout=0.1,
-                ) if use_temp_conv else nn.Identity()
+                ) if use_temp_conv else None
             )
 
             if not dual_cross_attention:
                 attentions.append(
                     Transformer2DModel(
                         num_attention_heads,
-                        out_channels // num_attention_heads,
+                        attention_head_dim,
                         in_channels=out_channels,
                         num_layers=transformer_layers_per_block[i],
                         cross_attention_dim=cross_attention_dim,
@@ -900,7 +982,7 @@ class CrossAttnDownBlock3D(nn.Module):
                 attentions.append(
                     DualTransformer2DModel(
                         num_attention_heads,
-                        out_channels // num_attention_heads,
+                        attention_head_dim,
                         in_channels=out_channels,
                         num_layers=1,
                         cross_attention_dim=cross_attention_dim,
@@ -911,15 +993,16 @@ class CrossAttnDownBlock3D(nn.Module):
             temp_attentions.append(
                 TransformerTemporalModel(
                     num_temp_attention_heads,
-                    out_channels // num_temp_attention_heads,
+                    temp_attention_head_dim,
                     in_channels=out_channels,
                     num_layers=1,
                     cross_attention_dim=temp_cross_attention_dim,
                     norm_num_groups=resnet_groups,
                     double_self_attention=temp_double_self_attention,
-                    use_positional_encoding=use_temp_positional_encoding,
+                    positional_encoding_type=temp_positional_encoding_type,
                     positional_encoding_max_length=temp_positional_encoding_max_length,
-                ) if use_temp_attention else nn.Identity()
+                    group_norm_3d=temp_group_norm_3d,
+                ) if use_temp_attention else None
             )
 
         self.resnets = nn.ModuleList(resnets)
@@ -975,11 +1058,12 @@ class CrossAttnDownBlock3D(nn.Module):
                     temb,
                     **ckpt_kwargs,
                 )
-                hidden_states = torch.utils.checkpoint.checkpoint(
-                    create_custom_forward(temp_conv),
-                    hidden_states,
-                    **ckpt_kwargs,
-                )
+                if temp_conv is not None:
+                    hidden_states = torch.utils.checkpoint.checkpoint(
+                        create_custom_forward(temp_conv),
+                        hidden_states,
+                        **ckpt_kwargs,
+                    )
                 hidden_states = attn(
                     hidden_states,
                     encoder_hidden_states=encoder_hidden_states,
@@ -988,12 +1072,16 @@ class CrossAttnDownBlock3D(nn.Module):
                     encoder_attention_mask=encoder_attention_mask,
                     return_dict=False,
                 )[0]
-                hidden_states = temp_attn(
-                    hidden_states, cross_attention_kwargs=cross_attention_kwargs, return_dict=False
-                )[0]
+                if temp_attn is not None:
+                    hidden_states = temp_attn(
+                        hidden_states, cross_attention_kwargs=cross_attention_kwargs, return_dict=False
+                    )[0]
             else:
                 hidden_states = resnet(hidden_states, temb, scale=lora_scale)
-                hidden_states = temp_conv(hidden_states)
+
+                if temp_conv is not None:
+                    hidden_states = temp_conv(hidden_states)
+
                 hidden_states = attn(
                     hidden_states,
                     encoder_hidden_states=encoder_hidden_states,
@@ -1002,9 +1090,11 @@ class CrossAttnDownBlock3D(nn.Module):
                     encoder_attention_mask=encoder_attention_mask,
                     return_dict=False,
                 )[0]
-                hidden_states = temp_attn(
-                    hidden_states, cross_attention_kwargs=cross_attention_kwargs, return_dict=False
-                )[0]
+
+                if temp_attn is not None:
+                    hidden_states = temp_attn(
+                        hidden_states, cross_attention_kwargs=cross_attention_kwargs, return_dict=False
+                    )[0]
 
             # apply additional residuals to the output of the last pair of resnet and attention blocks
             if i == len(blocks) - 1 and additional_residuals is not None:
@@ -1039,13 +1129,28 @@ class DownBlock3D(nn.Module):
         downsample_padding: int = 1,
         use_temp_conv: bool = True,
         use_temp_attention: bool = False,
-        num_temp_attention_heads: int = 8,
+        num_temp_attention_heads: Optional[int] = None,
+        temp_attention_head_dim: Optional[int] = None,
         temp_cross_attention_dim: Optional[int] = None,
         temp_double_self_attention: bool = True,
-        use_temp_positional_encoding: bool = False,
+        temp_positional_encoding_type: Optional[str] = None,
         temp_positional_encoding_max_length: int = 32,
+        temp_group_norm_3d: bool = False,
     ):
         super().__init__()
+
+        if use_temp_attention:
+            if num_temp_attention_heads is None and temp_attention_head_dim is None:
+                raise ValueError(
+                    "If `use_temp_attention=True`, either `num_temp_attention_heads` or `temp_attention_head_dim` must be specified."
+                )
+
+            if num_temp_attention_heads is None:
+                num_temp_attention_heads = out_channels // temp_attention_head_dim
+
+            if temp_attention_head_dim is None:
+                temp_attention_head_dim = out_channels // num_temp_attention_heads
+
         resnets = []
         temp_convs = []
         temp_attentions = []
@@ -1071,20 +1176,21 @@ class DownBlock3D(nn.Module):
                     out_channels,
                     out_channels,
                     dropout=0.1,
-                ) if use_temp_conv else nn.Identity()
+                ) if use_temp_conv else None
             )
             temp_attentions.append(
                 TransformerTemporalModel(
                     num_temp_attention_heads,
-                    out_channels // num_temp_attention_heads,
+                    temp_attention_head_dim,
                     in_channels=out_channels,
                     num_layers=1,
                     cross_attention_dim=temp_cross_attention_dim,
                     norm_num_groups=resnet_groups,
                     double_self_attention=temp_double_self_attention,
-                    use_positional_encoding=use_temp_positional_encoding,
+                    positional_encoding_type=temp_positional_encoding_type,
                     positional_encoding_max_length=temp_positional_encoding_max_length,
-                ) if use_temp_attention else nn.Identity()
+                    group_norm_3d=temp_group_norm_3d,
+                ) if use_temp_attention else None
             )
 
         self.resnets = nn.ModuleList(resnets)
@@ -1122,21 +1228,25 @@ class DownBlock3D(nn.Module):
                     hidden_states = torch.utils.checkpoint.checkpoint(
                         create_custom_forward(resnet), hidden_states, temb, use_reentrant=False
                     )
-                    hidden_states = torch.utils.checkpoint.checkpoint(
-                        create_custom_forward(temp_conv), hidden_states, use_reentrant=False
-                    )
+                    if temp_conv is not None:
+                        hidden_states = torch.utils.checkpoint.checkpoint(
+                            create_custom_forward(temp_conv), hidden_states, use_reentrant=False
+                        )
                 else:
                     hidden_states = torch.utils.checkpoint.checkpoint(
                         create_custom_forward(resnet), hidden_states, temb
                     )
-                    hidden_states = torch.utils.checkpoint.checkpoint(
-                        create_custom_forward(temp_conv), hidden_states
-                    )
+                    if temp_conv is not None:
+                        hidden_states = torch.utils.checkpoint.checkpoint(
+                            create_custom_forward(temp_conv), hidden_states
+                        )
             else:
                 hidden_states = resnet(hidden_states, temb, scale=scale)
-                hidden_states = temp_conv(hidden_states)
+                if temp_conv is not None:
+                    hidden_states = temp_conv(hidden_states)
 
-            hidden_states = temp_attn(hidden_states, return_dict=False)[0]
+            if temp_attn is not None:
+                hidden_states = temp_attn(hidden_states, return_dict=False)[0]
 
             output_states = output_states + (hidden_states,)
 
@@ -1165,7 +1275,8 @@ class CrossAttnUpBlock3D(nn.Module):
         resnet_act_fn: str = "swish",
         resnet_groups: int = 32,
         resnet_pre_norm: bool = True,
-        num_attention_heads: int = 1,
+        num_attention_heads: Optional[int] = None,
+        attention_head_dim: Optional[int] = None,
         cross_attention_dim: int = 1280,
         output_scale_factor: float = 1.0,
         add_upsample: bool = True,
@@ -1176,13 +1287,37 @@ class CrossAttnUpBlock3D(nn.Module):
         attention_type: str = "default",
         use_temp_conv: bool = True,
         use_temp_attention: bool = True,
-        num_temp_attention_heads: int = 8,
+        num_temp_attention_heads: Optional[int] = None,
+        temp_attention_head_dim: Optional[int] = None,
         temp_cross_attention_dim: Optional[int] = None,
         temp_double_self_attention: bool = True,
-        use_temp_positional_encoding: bool = False,
+        temp_positional_encoding_type: Optional[str] = None,
         temp_positional_encoding_max_length: int = 32,
+        temp_group_norm_3d: bool = False,
     ):
         super().__init__()
+
+        if num_attention_heads is None and attention_head_dim is None:
+            raise ValueError("Either `num_attention_heads` or `attention_head_dim` must be specified.")
+
+        if num_attention_heads is None:
+            num_attention_heads = out_channels // attention_head_dim
+
+        if attention_head_dim is None:
+            attention_head_dim = out_channels // num_attention_heads
+
+        if use_temp_attention:
+            if num_temp_attention_heads is None and temp_attention_head_dim is None:
+                raise ValueError(
+                    "If `use_temp_attention=True`, either `num_temp_attention_heads` or `temp_attention_head_dim` must be specified."
+                )
+
+            if num_temp_attention_heads is None:
+                num_temp_attention_heads = out_channels // temp_attention_head_dim
+
+            if temp_attention_head_dim is None:
+                temp_attention_head_dim = out_channels // num_temp_attention_heads
+
         resnets = []
         temp_convs = []
         attentions = []
@@ -1218,14 +1353,14 @@ class CrossAttnUpBlock3D(nn.Module):
                     out_channels,
                     out_channels,
                     dropout=0.1,
-                ) if use_temp_conv else nn.Identity()
+                ) if use_temp_conv else None
             )
 
             if not dual_cross_attention:
                 attentions.append(
                     Transformer2DModel(
                         num_attention_heads,
-                        out_channels // num_attention_heads,
+                        attention_head_dim,
                         in_channels=out_channels,
                         num_layers=transformer_layers_per_block[i],
                         cross_attention_dim=cross_attention_dim,
@@ -1240,7 +1375,7 @@ class CrossAttnUpBlock3D(nn.Module):
                 attentions.append(
                     DualTransformer2DModel(
                         num_attention_heads,
-                        out_channels // num_attention_heads,
+                        attention_head_dim,
                         in_channels=out_channels,
                         num_layers=1,
                         cross_attention_dim=cross_attention_dim,
@@ -1251,15 +1386,16 @@ class CrossAttnUpBlock3D(nn.Module):
             temp_attentions.append(
                 TransformerTemporalModel(
                     num_temp_attention_heads,
-                    out_channels // num_temp_attention_heads,
+                    temp_attention_head_dim,
                     in_channels=out_channels,
                     num_layers=1,
                     cross_attention_dim=temp_cross_attention_dim,
                     norm_num_groups=resnet_groups,
                     double_self_attention=temp_double_self_attention,
-                    use_positional_encoding=use_temp_positional_encoding,
+                    positional_encoding_type=temp_positional_encoding_type,
                     positional_encoding_max_length=temp_positional_encoding_max_length,
-                ) if use_temp_attention else nn.Identity()
+                    group_norm_3d=temp_group_norm_3d,
+                ) if use_temp_attention else None
             )
 
         self.resnets = nn.ModuleList(resnets)
@@ -1333,11 +1469,12 @@ class CrossAttnUpBlock3D(nn.Module):
                     temb,
                     **ckpt_kwargs,
                 )
-                hidden_states = torch.utils.checkpoint.checkpoint(
-                    create_custom_forward(temp_conv),
-                    hidden_states,
-                    **ckpt_kwargs,
-                )
+                if temp_conv is not None:
+                    hidden_states = torch.utils.checkpoint.checkpoint(
+                        create_custom_forward(temp_conv),
+                        hidden_states,
+                        **ckpt_kwargs,
+                    )
                 hidden_states = attn(
                     hidden_states,
                     encoder_hidden_states=encoder_hidden_states,
@@ -1346,12 +1483,17 @@ class CrossAttnUpBlock3D(nn.Module):
                     encoder_attention_mask=encoder_attention_mask,
                     return_dict=False,
                 )[0]
-                hidden_states = temp_attn(
-                    hidden_states, cross_attention_kwargs=cross_attention_kwargs, return_dict=False
-                )[0]
+                if temp_attn is not None:
+                    hidden_states = temp_attn(
+                        hidden_states, cross_attention_kwargs=cross_attention_kwargs, return_dict=False
+                    )[0]
+
             else:
                 hidden_states = resnet(hidden_states, temb, scale=lora_scale)
-                hidden_states = temp_conv(hidden_states)
+
+                if temp_conv is not None:
+                    hidden_states = temp_conv(hidden_states)
+
                 hidden_states = attn(
                     hidden_states,
                     encoder_hidden_states=encoder_hidden_states,
@@ -1360,9 +1502,11 @@ class CrossAttnUpBlock3D(nn.Module):
                     encoder_attention_mask=encoder_attention_mask,
                     return_dict=False,
                 )[0]
-                hidden_states = temp_attn(
-                    hidden_states, cross_attention_kwargs=cross_attention_kwargs, return_dict=False
-                )[0]
+
+                if temp_attn is not None:
+                    hidden_states = temp_attn(
+                        hidden_states, cross_attention_kwargs=cross_attention_kwargs, return_dict=False
+                    )[0]
 
         if self.upsamplers is not None:
             for upsampler in self.upsamplers:
@@ -1390,13 +1534,27 @@ class UpBlock3D(nn.Module):
         add_upsample: bool = True,
         use_temp_conv: bool = True,
         use_temp_attention: bool = False,
-        num_temp_attention_heads: int = 8,
+        num_temp_attention_heads: Optional[int] = None,
         temp_cross_attention_dim: Optional[int] = None,
         temp_double_self_attention: bool = True,
-        use_temp_positional_encoding: bool = False,
+        temp_positional_encoding_type: Optional[str] = None,
         temp_positional_encoding_max_length: int = 32,
+        temp_group_norm_3d: bool = False,
     ):
         super().__init__()
+
+        if use_temp_attention:
+            if num_temp_attention_heads is None and temp_attention_head_dim is None:
+                raise ValueError(
+                    "If `use_temp_attention=True`, either `num_temp_attention_heads` or `temp_attention_head_dim` must be specified."
+                )
+
+            if num_temp_attention_heads is None:
+                num_temp_attention_heads = out_channels // temp_attention_head_dim
+
+            if temp_attention_head_dim is None:
+                temp_attention_head_dim = out_channels // num_temp_attention_heads
+
         resnets = []
         temp_convs = []
         temp_attentions = []
@@ -1424,20 +1582,21 @@ class UpBlock3D(nn.Module):
                     out_channels,
                     out_channels,
                     dropout=0.1,
-                ) if use_temp_conv else nn.Identity()
+                ) if use_temp_conv else None
             )
             temp_attentions.append(
                 TransformerTemporalModel(
                     num_temp_attention_heads,
-                    out_channels // num_temp_attention_heads,
+                    temp_attention_head_dim,
                     in_channels=out_channels,
                     num_layers=1,
                     cross_attention_dim=temp_cross_attention_dim,
                     norm_num_groups=resnet_groups,
                     double_self_attention=temp_double_self_attention,
-                    use_positional_encoding=use_temp_positional_encoding,
+                    positional_encoding_type=temp_positional_encoding_type,
                     positional_encoding_max_length=temp_positional_encoding_max_length,
-                ) if use_temp_attention else nn.Identity()
+                    group_norm_3d=temp_group_norm_3d,
+                ) if use_temp_attention else None
             )
 
         self.resnets = nn.ModuleList(resnets)
@@ -1498,21 +1657,25 @@ class UpBlock3D(nn.Module):
                     hidden_states = torch.utils.checkpoint.checkpoint(
                         create_custom_forward(resnet), hidden_states, temb, use_reentrant=False
                     )
-                    hidden_states = torch.utils.checkpoint.checkpoint(
-                        create_custom_forward(temp_conv), hidden_states, use_reentrant=False
-                    )
+                    if temp_conv is not None:
+                        hidden_states = torch.utils.checkpoint.checkpoint(
+                            create_custom_forward(temp_conv), hidden_states, use_reentrant=False
+                        )
                 else:
                     hidden_states = torch.utils.checkpoint.checkpoint(
                         create_custom_forward(resnet), hidden_states, temb
                     )
-                    hidden_states = torch.utils.checkpoint.checkpoint(
-                        create_custom_forward(temp_conv), hidden_states
-                    )
+                    if temp_conv is not None:
+                        hidden_states = torch.utils.checkpoint.checkpoint(
+                            create_custom_forward(temp_conv), hidden_states
+                        )
             else:
                 hidden_states = resnet(hidden_states, temb, scale=scale)
-                hidden_states = temp_conv(hidden_states)
+                if temp_conv is not None:
+                    hidden_states = temp_conv(hidden_states)
 
-            hidden_states = temp_attn(hidden_states, return_dict=False)[0]
+            if temp_attn is not None:
+                hidden_states = temp_attn(hidden_states, return_dict=False)[0]
 
         if self.upsamplers is not None:
             for upsampler in self.upsamplers:
